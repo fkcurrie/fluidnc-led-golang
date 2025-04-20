@@ -18,6 +18,7 @@ const (
 	ROWS          = 16  // Number of addressable rows (DISPLAY_HEIGHT/2 for panels with upper/lower half data)
 	FONT_HEIGHT   = 7   // Height of our font in pixels
 	FONT_WIDTH    = 5   // Width of each character in our font
+	CHAR_SPACING  = 1   // Space between characters
 )
 
 // Simple 5x7 font for scrolling text
@@ -250,78 +251,108 @@ func (c *HUB75Controller) RenderFrame(frameData [][]byte) error {
 
 // renderScroll renders text that scrolls across the display
 func renderScroll(frameData [][]byte, text string, offset int, color [3]byte) {
-	// Clear the frame data
-	for row := range frameData {
-		for col := 0; col < DISPLAY_WIDTH; col++ {
-			idx := col * 6
-			for i := 0; i < 6; i++ {
-				frameData[row][idx+i] = 0
-			}
+	// Create a clean buffer for the new frame
+	// This helps prevent flickering and artifacts
+	bufferData := make([][]byte, ROWS)
+	for i := range bufferData {
+		bufferData[i] = make([]byte, DISPLAY_WIDTH*3*2)
+	}
+	
+	// Calculate total text width
+	textWidth := 0
+	for _, char := range text {
+		if _, exists := font5x7[char]; exists {
+			textWidth += FONT_WIDTH + CHAR_SPACING
+		} else {
+			// Space for unknown characters
+			textWidth += FONT_WIDTH + CHAR_SPACING
 		}
 	}
 	
-	// Position text in the upper half of the display only
-	// Use a fixed row position instead of trying to center vertically
-	const baseRow = 4  // Position text at row 4 (well within the upper half)
+	// Starting position (accounting for scroll)
+	// This creates a smooth scrolling effect from right to left
+	startX := DISPLAY_WIDTH - (offset % (textWidth + DISPLAY_WIDTH))
 	
-	// Starting position (considering scroll offset)
-	startX := DISPLAY_WIDTH - (offset % (len(text)*6 + DISPLAY_WIDTH))
+	// Position text vertically centered in the display
+	// For a 32-pixel high display with 7-pixel font, center at row 12
+	centerY := (DISPLAY_HEIGHT - FONT_HEIGHT) / 2
 	
-	// Render each character
-	for i, char := range text {
+	// Draw the text into the buffer
+	cursorX := startX
+	for _, char := range text {
 		fontData, exists := font5x7[char]
 		if !exists {
 			fontData = font5x7[' '] // Default to space for unknown characters
 		}
 		
-		// Character position
-		charX := startX + i*6
-		
-		// Skip if the character is completely off-screen
-		if charX+5 < 0 || charX > DISPLAY_WIDTH {
+		// Skip if the character is completely off-screen to the left
+		if cursorX + FONT_WIDTH < 0 {
+			cursorX += FONT_WIDTH + CHAR_SPACING
 			continue
 		}
 		
-		// Render the character
-		for col := 0; col < 5; col++ {
-			x := charX + col
+		// Skip if the character is completely off-screen to the right
+		if cursorX >= DISPLAY_WIDTH {
+			break
+		}
+		
+		// Draw the character
+		for col := 0; col < FONT_WIDTH; col++ {
+			x := cursorX + col
 			
 			// Skip if this column is off-screen
 			if x < 0 || x >= DISPLAY_WIDTH {
 				continue
 			}
 			
-			// Get the column data
-			colData := fontData[col]
+			// Get the column data from the font
+			colData := byte(0)
+			if col < len(fontData) {
+				colData = fontData[col]
+			}
 			
-			// Render each pixel in the column
-			for fontRow := 0; fontRow < FONT_HEIGHT; fontRow++ {
-				// Check if this pixel is on
-				isOn := (colData & (1 << fontRow)) != 0
+			// Draw each pixel in the column
+			for row := 0; row < FONT_HEIGHT; row++ {
+				// Check if this pixel is on in the font
+				isOn := (colData & (1 << row)) != 0
 				
 				if isOn {
-					// Calculate matrix row - keep everything in the upper half
-					matrixRow := baseRow + fontRow
+					// Calculate the actual Y position on the display
+					y := centerY + row
 					
-					// Skip if off screen or out of the addressable rows
-					if matrixRow < 0 || matrixRow >= ROWS {
+					// Skip if off-screen vertically
+					if y < 0 || y >= DISPLAY_HEIGHT {
 						continue
 					}
 					
-					// Set pixel color - consistently use the R1/G1/B1 pins for all rows
-					idx := x * 6
-					frameData[matrixRow][idx+0] = color[0] // R1
-					frameData[matrixRow][idx+1] = color[1] // G1
-					frameData[matrixRow][idx+2] = color[2] // B1
-					
-					// Also set the corresponding R2/G2/B2 pins to the same value
-					// This ensures uniform brightness across all rows
-					frameData[matrixRow][idx+3] = color[0] // R2
-					frameData[matrixRow][idx+4] = color[1] // G2
-					frameData[matrixRow][idx+5] = color[2] // B2
+					// Map the display coordinates to the appropriate framebuffer location
+					// For 32-high displays: Rows 0-15 map to upper half, 16-31 to lower half
+					if y < 16 {
+						// Upper half - use the R1G1B1 pins (first 3 bytes)
+						idx := x * 6
+						bufferData[y][idx+0] = color[0] // R1
+						bufferData[y][idx+1] = color[1] // G1
+						bufferData[y][idx+2] = color[2] // B1
+					} else {
+						// Lower half - use the R2G2B2 pins (last 3 bytes)
+						// Adjust the row to be 0-15 range for the buffer
+						idx := x * 6
+						bufferData[y-16][idx+3] = color[0] // R2
+						bufferData[y-16][idx+4] = color[1] // G2
+						bufferData[y-16][idx+5] = color[2] // B2
+					}
 				}
 			}
 		}
+		
+		// Move cursor to the next character position
+		cursorX += FONT_WIDTH + CHAR_SPACING
+	}
+	
+	// Copy the buffer to the frame data
+	// Only copy once all drawing is complete to prevent flickering
+	for row := range bufferData {
+		copy(frameData[row], bufferData[row])
 	}
 }
 
@@ -366,15 +397,15 @@ func main() {
 	frameData := make([][]byte, ROWS)
 	for i := range frameData {
 		// Each row needs RGB data for each pixel
-		// For a 32-pixel wide display with two RGB values per pixel (upper/lower):
-		// 32 pixels * 3 colors (RGB) * 2 (upper/lower) = 192 bytes per row
+		// For a 64-pixel wide display with two RGB values per pixel (upper/lower):
+		// 64 pixels * 3 colors (RGB) * 2 (upper/lower) = 384 bytes per row
 		frameData[i] = make([]byte, DISPLAY_WIDTH*3*2)
 	}
 
 	// Main display loop
 	stop := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(time.Millisecond * 100) // 10 FPS
+		ticker := time.NewTicker(time.Millisecond * 50) // 20 FPS for smoother animation
 		patternCounter := 0
 		scrollOffset := 0
 		
@@ -389,6 +420,7 @@ func main() {
 					// Show scrolling text - use red instead of yellow for less brightness
 					color := [3]byte{1, 0, 0} // Red text (R only)
 					renderScroll(frameData, *textToScroll, scrollOffset, color)
+					// Scroll slower for better readability (increment by 1 every frame)
 					scrollOffset++
 				} else {
 					// Show test patterns
@@ -430,6 +462,17 @@ func updateFrameData(frameData [][]byte, patternCounter int) {
 
 // fillColor fills the entire frame with a solid color
 func fillColor(frameData [][]byte, r, g, b byte) {
+	// First clear the entire frame
+	for row := range frameData {
+		for col := 0; col < DISPLAY_WIDTH; col++ {
+			idx := col * 6
+			for i := 0; i < 6; i++ {
+				frameData[row][idx+i] = 0
+			}
+		}
+	}
+
+	// Then set all pixels to the desired color
 	for row := range frameData {
 		for col := 0; col < DISPLAY_WIDTH; col++ {
 			// Set upper half pixel
@@ -448,30 +491,44 @@ func fillColor(frameData [][]byte, r, g, b byte) {
 
 // fillCheckerboard creates a checkerboard pattern
 func fillCheckerboard(frameData [][]byte, offset int) {
+	// First clear the entire frame
 	for row := range frameData {
 		for col := 0; col < DISPLAY_WIDTH; col++ {
+			idx := col * 6
+			for i := 0; i < 6; i++ {
+				frameData[row][idx+i] = 0
+			}
+		}
+	}
+
+	// Create animated checkerboard pattern using the offset for animation
+	// Larger cells make the pattern more visible (4x4 pixels per cell)
+	cellSize := 4
+	for row := range frameData {
+		for col := 0; col < DISPLAY_WIDTH; col++ {
+			// Determine if this should be an "on" cell in the checkerboard
+			// Using integer division to group pixels into cells
+			cellRow := row / cellSize
+			cellCol := col / cellSize
+			isOn := ((cellRow + cellCol + (offset / 8)) % 2) == 0
+			
+			// Calculate the index in the frame data
 			upperIdx := col * 6
 			
-			// Determine if this should be an "on" cell in the checkerboard
-			isOn := ((row + col + offset) % 2) == 0
-			
-			// Set upper half pixel
+			// Set both upper and lower half pixels to the same color for consistency
 			if isOn {
+				// Yellow for "on" cells
 				frameData[row][upperIdx+0] = 1 // R1
 				frameData[row][upperIdx+1] = 1 // G1
 				frameData[row][upperIdx+2] = 0 // B1
-			} else {
-				frameData[row][upperIdx+0] = 0 // R1
-				frameData[row][upperIdx+1] = 0 // G1
-				frameData[row][upperIdx+2] = 0 // B1
-			}
-			
-			// Set lower half pixel - use the same colors as upper half
-			if isOn {
 				frameData[row][upperIdx+3] = 1 // R2
 				frameData[row][upperIdx+4] = 1 // G2
 				frameData[row][upperIdx+5] = 0 // B2
 			} else {
+				// Black for "off" cells
+				frameData[row][upperIdx+0] = 0 // R1
+				frameData[row][upperIdx+1] = 0 // G1
+				frameData[row][upperIdx+2] = 0 // B1
 				frameData[row][upperIdx+3] = 0 // R2
 				frameData[row][upperIdx+4] = 0 // G2
 				frameData[row][upperIdx+5] = 0 // B2
