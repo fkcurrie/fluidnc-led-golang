@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  # LED Matrix Hardware Container
+  matrix:
+    build:
+      context: .
+      dockerfile: docker/matrix/Dockerfile
+    privileged: true  # Required for GPIO access
+    volumes:
+      - /dev/gpiochip0:/dev/gpiochip0
+      - /dev/gpiomem:/dev/gpiomem
+      - /sys/class/gpio:/sys/class/gpio
+    environment:
+      - MATRIX_PINOUT=AdafruitMatrixBonnetBGR
+      - MATRIX_NUM_ADDRESS_LINES=5
+      - MATRIX_NUM_PLANES=10
+      - MATRIX_ORIENTATION=R180
+      - MATRIX_BRIGHTNESS=0.5
+      - MATRIX_NUM_TEMPORAL_PLANES=4
+    restart: unless-stopped
+    networks:
+      - fluidnc-network
+
+  # FluidNC Discovery Container
+  discovery:
+    build:
+      context: .
+      dockerfile: docker/discovery/Dockerfile
+    environment:
+      - DISCOVERY_SCAN_INTERVAL=300
+      - DISCOVERY_TIMEOUT=5
+    restart: on-failure
+    networks:
+      - fluidnc-network
+
+  # FluidNC Communication Container
+  fluidnc:
+    build:
+      context: .
+      dockerfile: docker/fluidnc/Dockerfile
+    environment:
+      - FLUIDNC_PORT=81
+      - FLUIDNC_RECONNECT_INTERVAL=5
+      - FLUIDNC_STATUS_INTERVAL=0.5
+    depends_on:
+      - discovery
+    restart: unless-stopped
+    networks:
+      - fluidnc-network
+
+  # Display Controller Container
+  display:
+    build:
+      context: .
+      dockerfile: docker/display/Dockerfile
+    environment:
+      - DISPLAY_WIDTH=64
+      - DISPLAY_HEIGHT=32
+      - DISPLAY_BRIGHTNESS=50
+      - DISPLAY_UPDATE_INTERVAL=0.5
+    depends_on:
+      - matrix
+      - fluidnc
+    restart: unless-stopped
+    networks:
+      - fluidnc-network
+
+networks:
+  fluidnc-network:
+    driver: bridge 

@@ -1,0 +1,15 @@
+{
+    "display": {
+        "width": 32,
+        "height": 8,
+        "gpio_pin": 18,
+        "brightness": 128,
+        "update_interval": 0.5
+    },
+    "grbl": {
+        "host": "localhost",
+        "port": 23,
+        "reconnect_interval": 5,
+        "status_interval": 0.5
+    }
+} 
