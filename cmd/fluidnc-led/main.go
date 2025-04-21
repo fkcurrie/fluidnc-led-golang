@@ -12,9 +12,21 @@ import (
 	"github.com/fcurrie/fluidnc-led-golang/internal/grbl"
 )
 
+// Version information
+const (
+	Version = "v0.2.0"
+)
+
 func main() {
 	configPath := flag.String("config", "config.json", "Path to configuration file")
+	version := flag.Bool("version", false, "Display version information")
 	flag.Parse()
+
+	// Display version if requested
+	if *version {
+		log.Printf("FluidNC LED Monitor %s", Version)
+		return
+	}
 
 	// Load configuration
 	cfg, err := config.LoadConfig(*configPath)
