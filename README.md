@@ -81,8 +81,8 @@ The HUB75 LED matrix uses the following BCM GPIO pins as specified by the Adafru
 
 ## Known Issues
 
-- Text scrolling shows flickering under certain conditions
-- Sometimes text appears duplicated or at incorrect positions
+- ~~Text scrolling shows flickering under certain conditions~~ (Fixed in v0.2.0)
+- ~~Sometimes text appears duplicated or at incorrect positions~~ (Fixed in v0.2.0)
 - Single-bit color depth limits display capabilities
 - No connection to FluidNC status API yet
 
@@ -121,6 +121,28 @@ We've confirmed that our HUB75 LED matrix driver works with the following approa
    - Latch the data
    - Enable output
 5. Adding small delays between operations to ensure proper timing
+6. Setting ROWS=16 is necessary for 32-pixel height displays, as the HUB75 protocol addresses rows in pairs (upper/lower half simultaneously), requiring 16 addressable rows to control all 32 physical rows
+7. Proper double-buffering implementation with buffer swapping AFTER rendering each frame helps stabilize scrolling text and prevents flickering
+8. FIXED_TIME_PER_FRAME and pre-clearing RGB pins before each row update eliminates flickering
+9. Maintaining a minimum brightness threshold for non-zero colors prevents low-intensity flicker
+
+### Anti-Flicker Techniques (Added in v0.2.0)
+
+We've implemented several techniques to eliminate flickering:
+
+1. **Fixed Frame Timing**: Each frame takes exactly the same amount of time, eliminating irregular refresh cycles
+2. **Brightness Correction**: A minimum brightness threshold prevents very dim pixels from flickering
+3. **Pre-Clear Pins**: All RGB pins are cleared at the beginning of each row scan to reduce ghosting
+4. **Consistent Row Timing**: Precise timing for each row scan maintains stable display
+5. **Gradient Test Pattern**: New test mode with color gradients for easier flicker detection
+6. **Adjustable Refresh Rate**: Command-line option to limit refresh rate for consistent timing
+
+### New Features (v0.2.0)
+
+- Larger 8x12 Comic Sans-like font for improved readability
+- Gradient test pattern for display diagnostics (`-test` flag)
+- Refresh rate limiter option (`-limit-refresh=Hz`)
+- Better double-buffering implementation for smoother scrolling
 
 ### Troubleshooting
 

@@ -2,58 +2,43 @@ package main
 
 import (
 	"log"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/warthog618/go-gpiocdev"
 )
 
 func main() {
-	// Set up signal handler for graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	log.Println("Starting GPIO test...")
-
-	// Try to request GPIO line 5 (BCM GPIO 5) as output
-	line, err := gpiocdev.RequestLine("gpiochip0", 5, gpiocdev.AsOutput(0))
+	// Try to access a single GPIO pin to verify functionality
+	chipName := "gpiochip0"
+	
+	// Try a simple pin to test (BCM GPIO 2)
+	pin := 2
+	
+	log.Printf("Testing GPIO pin %d on chip %s", pin, chipName)
+	
+	// Request the GPIO line
+	line, err := gpiocdev.RequestLine(chipName, pin, gpiocdev.AsOutput(0))
 	if err != nil {
-		log.Printf("Failed to request line: %v", err)
-		
-		// Try to request a line from gpiochip11 instead (where GPIO base is 512)
-		log.Println("Trying with gpiochip11...")
-		line, err = gpiocdev.RequestLine("gpiochip11", 512+5, gpiocdev.AsOutput(0))
-		if err != nil {
-			log.Fatalf("Failed to request line from gpiochip11: %v", err)
-		}
+		log.Fatalf("Failed to request GPIO line: %v", err)
 	}
 	defer line.Close()
-
-	log.Println("Successfully requested GPIO line")
-
-	// Toggle the line every second until terminated
-	go func() {
-		value := 0
-		ticker := time.NewTicker(time.Second)
-		for {
-			select {
-			case <-sigChan:
-				log.Println("Received shutdown signal")
-				return
-			case <-ticker.C:
-				value ^= 1
-				if err := line.SetValue(value); err != nil {
-					log.Printf("Failed to set value: %v", err)
-					continue
-				}
-				log.Printf("Set GPIO value to %d", value)
-			}
+	
+	log.Println("Successfully requested GPIO line, blinking 10 times...")
+	
+	// Blink the pin 10 times
+	for i := 0; i < 10; i++ {
+		if err := line.SetValue(1); err != nil {
+			log.Fatalf("Failed to set GPIO high: %v", err)
 		}
-	}()
-
-	// Wait for signal to terminate
-	<-sigChan
-	log.Println("Shutting down...")
+		log.Printf("Set GPIO pin %d HIGH", pin)
+		time.Sleep(time.Second)
+		
+		if err := line.SetValue(0); err != nil {
+			log.Fatalf("Failed to set GPIO low: %v", err)
+		}
+		log.Printf("Set GPIO pin %d LOW", pin)
+		time.Sleep(time.Second)
+	}
+	
+	log.Println("GPIO test completed successfully")
 } 

@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -13,62 +14,623 @@ import (
 
 // Constants for display size
 const (
-	DISPLAY_WIDTH  = 64 // Width in pixels for a 32x64 panel
-	DISPLAY_HEIGHT = 32 // Height in pixels for a 32x64 panel
-	ROWS          = 16  // Number of addressable rows (DISPLAY_HEIGHT/2 for panels with upper/lower half data)
-	FONT_HEIGHT   = 7   // Height of our font in pixels
-	FONT_WIDTH    = 5   // Width of each character in our font
-	CHAR_SPACING  = 1   // Space between characters
+	DISPLAY_WIDTH  = 64  // Width in pixels
+	DISPLAY_HEIGHT = 32  // Height in pixels
+	FONT_HEIGHT   = 12   // Height of our font in pixels (increased from 7)
+	FONT_WIDTH    = 8    // Width of each character in our font (increased from 5)
+	CHAR_SPACING  = 2    // Space between characters (increased for readability)
+	SCAN_RATE     = 80   // Microseconds per row scan (reduced for faster refresh)
+	REFRESH_RATE  = 75   // Frames per second (increased for smoother scrolling)
+	SCROLL_SPEED  = 1    // Pixels to move per frame update (reduced for smoother motion)
+	FIXED_TIME_PER_FRAME = true // Use fixed timing to prevent flicker
+	MIN_BRIGHTNESS = 0.2        // Minimum brightness level to maintain even at low intensity
 )
 
-// Simple 5x7 font for scrolling text
-// Each character is represented by 5 bytes, each byte representing a column of pixels
-// Where 1 bits are "on" pixels
-var font5x7 = map[rune][]byte{
-	'A': {0x7E, 0x09, 0x09, 0x09, 0x7E},
-	'B': {0x7F, 0x49, 0x49, 0x49, 0x36},
-	'C': {0x3E, 0x41, 0x41, 0x41, 0x22},
-	'D': {0x7F, 0x41, 0x41, 0x22, 0x1C},
-	'E': {0x7F, 0x49, 0x49, 0x49, 0x41},
-	'F': {0x7F, 0x09, 0x09, 0x09, 0x01},
-	'G': {0x3E, 0x41, 0x49, 0x49, 0x3A},
-	'H': {0x7F, 0x08, 0x08, 0x08, 0x7F},
-	'I': {0x00, 0x41, 0x7F, 0x41, 0x00},
-	'J': {0x20, 0x40, 0x41, 0x3F, 0x01},
-	'K': {0x7F, 0x08, 0x14, 0x22, 0x41},
-	'L': {0x7F, 0x40, 0x40, 0x40, 0x40},
-	'M': {0x7F, 0x02, 0x0C, 0x02, 0x7F},
-	'N': {0x7F, 0x04, 0x08, 0x10, 0x7F},
-	'O': {0x3E, 0x41, 0x41, 0x41, 0x3E},
-	'P': {0x7F, 0x09, 0x09, 0x09, 0x06},
-	'Q': {0x3E, 0x41, 0x51, 0x21, 0x5E},
-	'R': {0x7F, 0x09, 0x19, 0x29, 0x46},
-	'S': {0x26, 0x49, 0x49, 0x49, 0x32},
-	'T': {0x01, 0x01, 0x7F, 0x01, 0x01},
-	'U': {0x3F, 0x40, 0x40, 0x40, 0x3F},
-	'V': {0x1F, 0x20, 0x40, 0x20, 0x1F},
-	'W': {0x3F, 0x40, 0x30, 0x40, 0x3F},
-	'X': {0x63, 0x14, 0x08, 0x14, 0x63},
-	'Y': {0x07, 0x08, 0x70, 0x08, 0x07},
-	'Z': {0x61, 0x51, 0x49, 0x45, 0x43},
-	'0': {0x3E, 0x51, 0x49, 0x45, 0x3E},
-	'1': {0x00, 0x42, 0x7F, 0x40, 0x00},
-	'2': {0x42, 0x61, 0x51, 0x49, 0x46},
-	'3': {0x21, 0x41, 0x45, 0x4B, 0x31},
-	'4': {0x18, 0x14, 0x12, 0x7F, 0x10},
-	'5': {0x27, 0x45, 0x45, 0x45, 0x39},
-	'6': {0x3C, 0x4A, 0x49, 0x49, 0x30},
-	'7': {0x01, 0x71, 0x09, 0x05, 0x03},
-	'8': {0x36, 0x49, 0x49, 0x49, 0x36},
-	'9': {0x06, 0x49, 0x49, 0x29, 0x1E},
-	' ': {0x00, 0x00, 0x00, 0x00, 0x00},
-	'!': {0x00, 0x00, 0x5F, 0x00, 0x00},
-	'.': {0x00, 0x60, 0x60, 0x00, 0x00},
-	',': {0x00, 0x50, 0x30, 0x00, 0x00},
-	':': {0x00, 0x36, 0x36, 0x00, 0x00},
-	'-': {0x08, 0x08, 0x08, 0x08, 0x08},
-	'+': {0x08, 0x08, 0x3E, 0x08, 0x08},
-}
+// ComicFont defines a larger 8x12 font with Comic Sans-like rounded styling
+var comicFont = map[rune][]byte{
+	'A': {
+		0b00111100,
+		0b01100110,
+		0b11000011,
+		0b11000011,
+		0b11111111,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b00000000,
+		0b00000000,
+	},
+	'B': {
+		0b11111100,
+		0b01100110,
+		0b01100110,
+		0b01100110,
+		0b01111100,
+		0b01100110,
+		0b01100110,
+		0b01100110,
+		0b01100110,
+		0b11111100,
+		0b00000000,
+		0b00000000,
+	},
+	'C': {
+		0b00111100,
+		0b01100110,
+		0b11000011,
+		0b11000000,
+		0b11000000,
+		0b11000000,
+		0b11000000,
+		0b11000011,
+		0b01100110,
+		0b00111100,
+		0b00000000,
+		0b00000000,
+	},
+	'D': {
+		0b11111000,
+		0b01101100,
+		0b01100110,
+		0b01100011,
+		0b01100011,
+		0b01100011,
+		0b01100011,
+		0b01100110,
+		0b01101100,
+		0b11111000,
+		0b00000000,
+		0b00000000,
+	},
+	'E': {
+		0b11111110,
+		0b01100010,
+		0b01100000,
+		0b01100000,
+		0b01111100,
+		0b01100000,
+		0b01100000,
+		0b01100000,
+		0b01100010,
+		0b11111110,
+		0b00000000,
+		0b00000000,
+	},
+	'F': {
+		0b11111110,
+		0b01100010,
+		0b01100000,
+		0b01100000,
+		0b01111100,
+		0b01100000,
+		0b01100000,
+		0b01100000,
+		0b01100000,
+		0b11110000,
+		0b00000000,
+		0b00000000,
+	},
+	'G': {
+		0b00111100,
+		0b01100110,
+		0b11000011,
+		0b11000000,
+		0b11000000,
+		0b11001111,
+		0b11000011,
+		0b11000011,
+		0b01100111,
+		0b00111011,
+		0b00000000,
+		0b00000000,
+	},
+	'H': {
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11111111,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b00000000,
+		0b00000000,
+	},
+	'I': {
+		0b01111100,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b01111100,
+		0b00000000,
+		0b00000000,
+	},
+	'J': {
+		0b00011110,
+		0b00001100,
+		0b00001100,
+		0b00001100,
+		0b00001100,
+		0b00001100,
+		0b11001100,
+		0b11001100,
+		0b01101100,
+		0b00111000,
+		0b00000000,
+		0b00000000,
+	},
+	'K': {
+		0b11100111,
+		0b01100110,
+		0b01100100,
+		0b01101000,
+		0b01110000,
+		0b01111000,
+		0b01101100,
+		0b01100110,
+		0b01100011,
+		0b11100001,
+		0b00000000,
+		0b00000000,
+	},
+	'L': {
+		0b11110000,
+		0b01100000,
+		0b01100000,
+		0b01100000,
+		0b01100000,
+		0b01100000,
+		0b01100000,
+		0b01100001,
+		0b01100011,
+		0b11111111,
+		0b00000000,
+		0b00000000,
+	},
+	'M': {
+		0b11000011,
+		0b11100111,
+		0b11111111,
+		0b11011011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b00000000,
+		0b00000000,
+	},
+	'N': {
+		0b11000011,
+		0b11100011,
+		0b11110011,
+		0b11011011,
+		0b11001111,
+		0b11000111,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b00000000,
+		0b00000000,
+	},
+	'O': {
+		0b00111100,
+		0b01100110,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b01100110,
+		0b00111100,
+		0b00000000,
+		0b00000000,
+	},
+	'P': {
+		0b11111100,
+		0b01100110,
+		0b01100110,
+		0b01100110,
+		0b01100110,
+		0b01111100,
+		0b01100000,
+		0b01100000,
+		0b01100000,
+		0b11110000,
+		0b00000000,
+		0b00000000,
+	},
+	'Q': {
+		0b00111100,
+		0b01100110,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11001011,
+		0b11000111,
+		0b01100110,
+		0b00111101,
+		0b00000000,
+		0b00000000,
+	},
+	'R': {
+		0b11111100,
+		0b01100110,
+		0b01100110,
+		0b01100110,
+		0b01111100,
+		0b01101100,
+		0b01100110,
+		0b01100110,
+		0b01100110,
+		0b11100110,
+		0b00000000,
+		0b00000000,
+	},
+	'S': {
+		0b00111100,
+		0b01100110,
+		0b11000011,
+		0b01100000,
+		0b00111000,
+		0b00001100,
+		0b00000110,
+		0b11000011,
+		0b01100110,
+		0b00111100,
+		0b00000000,
+		0b00000000,
+	},
+	'T': {
+		0b11111111,
+		0b10110110,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b01111000,
+		0b00000000,
+		0b00000000,
+	},
+	'U': {
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b01100110,
+		0b00111100,
+		0b00000000,
+		0b00000000,
+	},
+	'V': {
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b01100110,
+		0b00111100,
+		0b00011000,
+		0b00000000,
+		0b00000000,
+	},
+	'W': {
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11000011,
+		0b11011011,
+		0b11111111,
+		0b01100110,
+		0b01100110,
+		0b00000000,
+		0b00000000,
+	},
+	'X': {
+		0b11000011,
+		0b11000011,
+		0b01100110,
+		0b00111100,
+		0b00011000,
+		0b00011000,
+		0b00111100,
+		0b01100110,
+		0b11000011,
+		0b11000011,
+		0b00000000,
+		0b00000000,
+	},
+	'Y': {
+		0b11000011,
+		0b11000011,
+		0b01100110,
+		0b00111100,
+		0b00011000,
+		0b00011000,
+		0b00011000,
+		0b00011000,
+		0b00011000,
+		0b00111100,
+		0b00000000,
+		0b00000000,
+	},
+	'Z': {
+		0b11111111,
+		0b11000111,
+		0b10001100,
+		0b00011000,
+		0b00110000,
+		0b01100000,
+		0b11000000,
+		0b11000011,
+		0b11100111,
+		0b11111111,
+		0b00000000,
+		0b00000000,
+	},
+	'0': {
+		0b00111100,
+		0b01100110,
+		0b11000011,
+		0b11000111,
+		0b11001111,
+		0b11011011,
+		0b11110011,
+		0b11100011,
+		0b01100110,
+		0b00111100,
+		0b00000000,
+		0b00000000,
+	},
+	'1': {
+		0b00110000,
+		0b01110000,
+		0b11110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b11111100,
+		0b00000000,
+		0b00000000,
+	},
+	'2': {
+		0b00111100,
+		0b01100110,
+		0b11000011,
+		0b00000011,
+		0b00000110,
+		0b00001100,
+		0b00011000,
+		0b00110000,
+		0b01100000,
+		0b11111111,
+		0b00000000,
+		0b00000000,
+	},
+	'3': {
+		0b00111100,
+		0b01100110,
+		0b11000011,
+		0b00000011,
+		0b00011110,
+		0b00011110,
+		0b00000011,
+		0b11000011,
+		0b01100110,
+		0b00111100,
+		0b00000000,
+		0b00000000,
+	},
+	'4': {
+		0b00001100,
+		0b00011100,
+		0b00111100,
+		0b01101100,
+		0b11001100,
+		0b11111111,
+		0b00001100,
+		0b00001100,
+		0b00001100,
+		0b00011110,
+		0b00000000,
+		0b00000000,
+	},
+	'5': {
+		0b11111111,
+		0b11000000,
+		0b11000000,
+		0b11000000,
+		0b11111100,
+		0b00000110,
+		0b00000011,
+		0b11000011,
+		0b01100110,
+		0b00111100,
+		0b00000000,
+		0b00000000,
+	},
+	'6': {
+		0b00111100,
+		0b01100110,
+		0b11000000,
+		0b11000000,
+		0b11111100,
+		0b11000110,
+		0b11000011,
+		0b11000011,
+		0b01100110,
+		0b00111100,
+		0b00000000,
+		0b00000000,
+	},
+	'7': {
+		0b11111111,
+		0b11000011,
+		0b10000110,
+		0b00001100,
+		0b00011000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00110000,
+		0b00000000,
+		0b00000000,
+	},
+	'8': {
+		0b00111100,
+		0b01100110,
+		0b11000011,
+		0b11000011,
+		0b01111110,
+		0b01111110,
+		0b11000011,
+		0b11000011,
+		0b01100110,
+		0b00111100,
+		0b00000000,
+		0b00000000,
+	},
+	'9': {
+		0b00111100,
+		0b01100110,
+		0b11000011,
+		0b11000011,
+		0b01100111,
+		0b00111111,
+		0b00000011,
+		0b00000011,
+		0b01100110,
+		0b00111100,
+		0b00000000,
+		0b00000000,
+	},
+	' ': {
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+	},
+	'!': {
+		0b00011000,
+		0b00111100,
+		0b00111100,
+		0b00111100,
+		0b00111100,
+		0b00011000,
+		0b00011000,
+		0b00000000,
+		0b00011000,
+		0b00011000,
+		0b00000000,
+		0b00000000,
+	},
+	'.': {
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00111100,
+		0b00111100,
+		0b00000000,
+		0b00000000,
+	},
+	',': {
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00111000,
+		0b00111000,
+		0b00011000,
+		0b00110000,
+		0b00000000,
+	},
+	':': {
+		0b00000000,
+		0b00000000,
+		0b00111100,
+		0b00111100,
+		0b00000000,
+		0b00000000,
+		0b00111100,
+		0b00111100,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+	},
+	'-': {
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b11111111,
+		0b11111111,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+		0b00000000,
+	},
+	'+': {
+		0b00000000,
+		0b00000000,
+		0b00011000,
+		0b00011000,
+		0b00011000,
+		0b11111111,
+		0b11111111,
+		0b00011000,
+		0b00011000,
+		0b00011000,
+		0b00000000,
+		0b00000000,
+	},
+};
 
 // HUB75 pin configuration for Adafruit RGB Matrix Bonnet
 type HUB75Config struct {
@@ -94,6 +656,12 @@ type HUB75Controller struct {
 	lines   map[int]*gpiocdev.Line
 }
 
+// Package-level variables
+var (
+	isFirstRender = true
+	renderLock    sync.Mutex
+)
+
 // NewHUB75Controller creates a new HUB75 controller with the specified configuration
 func NewHUB75Controller(config HUB75Config) (*HUB75Controller, error) {
 	ctrl := &HUB75Controller{
@@ -111,15 +679,20 @@ func NewHUB75Controller(config HUB75Config) (*HUB75Controller, error) {
 	}
 	
 	log.Println("Requesting GPIO lines...")
+	// For Raspberry Pi 5 with pins > 512, we need to use gpiochip0
+	chipName := "gpiochip0"
+	
 	for _, pin := range pins {
-		line, err := gpiocdev.RequestLine("gpiochip0", pin, gpiocdev.AsOutput(0))
+		// Adjust GPIO numbers for Pi 5
+		adjustedPin := pin - 512
+		line, err := gpiocdev.RequestLine(chipName, adjustedPin, gpiocdev.AsOutput(0))
 		if err != nil {
 			// Clean up any lines we've already requested
 			ctrl.Close()
 			return nil, err
 		}
 		ctrl.lines[pin] = line
-		log.Printf("Successfully requested GPIO pin %d", pin)
+		log.Printf("Successfully requested GPIO pin %d (adjusted to %d)", pin, adjustedPin)
 	}
 	
 	return ctrl, nil
@@ -149,238 +722,240 @@ func (c *HUB75Controller) setPin(pin int, value int) error {
 	return line.SetValue(value)
 }
 
-// UpdateRow updates a single row of the LED matrix
-func (c *HUB75Controller) UpdateRow(rowIdx int, rowData []byte) error {
-	// Set address bits based on row index
-	addrVal := rowIdx & 0x1F // 5 bits max (A-E)
-	
-	// Set individual address pins
-	if err := c.setPin(c.config.ABPin, (addrVal>>0)&1); err != nil {
-		return err
-	}
-	if err := c.setPin(c.config.BCPin, (addrVal>>1)&1); err != nil {
-		return err
-	}
-	if err := c.setPin(c.config.CCPin, (addrVal>>2)&1); err != nil {
-		return err
-	}
-	if err := c.setPin(c.config.DPin, (addrVal>>3)&1); err != nil {
-		return err
-	}
-	if err := c.setPin(c.config.EPin, (addrVal>>4)&1); err != nil {
-		return err
-	}
-	
-	// Disable output during data change
-	if err := c.setPin(c.config.OEPin, 1); err != nil {
-		return err
-	}
-	
-	// For each pixel in the row
-	for col := 0; col < DISPLAY_WIDTH; col++ {
-		// Calculate data index for this pixel (6 bytes per pixel)
-		idx := col * 6
-		
-		// Make sure we don't go out of bounds
-		if idx+5 >= len(rowData) {
-			break
-		}
-		
-		// Set RGB data pins for upper half
-		if err := c.setPin(c.config.R1Pin, int(rowData[idx+0])); err != nil {
-			return err
-		}
-		if err := c.setPin(c.config.G1Pin, int(rowData[idx+1])); err != nil {
-			return err
-		}
-		if err := c.setPin(c.config.B1Pin, int(rowData[idx+2])); err != nil {
-			return err
-		}
-		
-		// Set RGB data pins for lower half
-		if err := c.setPin(c.config.R2Pin, int(rowData[idx+3])); err != nil {
-			return err
-		}
-		if err := c.setPin(c.config.G2Pin, int(rowData[idx+4])); err != nil {
-			return err
-		}
-		if err := c.setPin(c.config.B2Pin, int(rowData[idx+5])); err != nil {
-			return err
-		}
-		
-		// Pulse the clock to latch the data
-		if err := c.setPin(c.config.CLKPin, 1); err != nil {
-			return err
-		}
-		time.Sleep(time.Microsecond)
-		if err := c.setPin(c.config.CLKPin, 0); err != nil {
-			return err
-		}
-	}
-	
-	// Latch the data
-	if err := c.setPin(c.config.LAPin, 1); err != nil {
-		return err
-	}
-	time.Sleep(time.Microsecond)
-	if err := c.setPin(c.config.LAPin, 0); err != nil {
-		return err
-	}
-	
-	// Enable output
-	if err := c.setPin(c.config.OEPin, 0); err != nil {
-		return err
-	}
-	
-	return nil
+// FrameBuffer represents a full 32-pixel high display buffer
+type FrameBuffer struct {
+	Pixels [DISPLAY_HEIGHT][DISPLAY_WIDTH][3]byte
 }
 
-// RenderFrame renders a full frame to the LED matrix
-func (c *HUB75Controller) RenderFrame(frameData [][]byte) error {
-	for rowIdx, rowData := range frameData {
-		if err := c.UpdateRow(rowIdx, rowData); err != nil {
-			return err
-		}
-		
-		// Small delay between rows to avoid flickering
-		time.Sleep(time.Microsecond * 50)
-	}
-	
-	return nil
+// NewFrameBuffer creates a new zeroed frame buffer
+func NewFrameBuffer() *FrameBuffer {
+	return &FrameBuffer{}
 }
 
-// renderScroll renders text that scrolls across the display
-func renderScroll(frameData [][]byte, text string, offset int, color [3]byte) {
-	// Create a clean buffer for the new frame
-	// This helps prevent flickering and artifacts
-	bufferData := make([][]byte, ROWS)
-	for i := range bufferData {
-		bufferData[i] = make([]byte, DISPLAY_WIDTH*3*2)
+// Clear zeros out the entire frame buffer
+func (fb *FrameBuffer) Clear() {
+	for y := 0; y < DISPLAY_HEIGHT; y++ {
+		for x := 0; x < DISPLAY_WIDTH; x++ {
+			fb.Pixels[y][x][0] = 0 // R
+			fb.Pixels[y][x][1] = 0 // G
+			fb.Pixels[y][x][2] = 0 // B
+		}
 	}
+}
+
+// SetPixel sets a pixel color at the specified coordinates
+func (fb *FrameBuffer) SetPixel(x, y int, r, g, b byte) {
+	if x >= 0 && x < DISPLAY_WIDTH && y >= 0 && y < DISPLAY_HEIGHT {
+		fb.Pixels[y][x][0] = r
+		fb.Pixels[y][x][1] = g
+		fb.Pixels[y][x][2] = b
+	}
+}
+
+// RenderText renders text centered on the display
+func (fb *FrameBuffer) RenderText(text string, offsetX int, color [3]byte) {
+	fb.Clear()
 	
 	// Calculate total text width
-	textWidth := 0
+	textWidth := len(text) * (FONT_WIDTH + CHAR_SPACING)
+	
+	// Calculate the starting X position with wrapping
+	startX := DISPLAY_WIDTH - (offsetX % (textWidth + DISPLAY_WIDTH))
+	
+	// Calculate vertical position - center the text vertically
+	startY := (DISPLAY_HEIGHT - FONT_HEIGHT) / 2
+	
+	// Draw each character
+	x := startX
 	for _, char := range text {
-		if _, exists := font5x7[char]; exists {
-			textWidth += FONT_WIDTH + CHAR_SPACING
-		} else {
-			// Space for unknown characters
-			textWidth += FONT_WIDTH + CHAR_SPACING
-		}
-	}
-	
-	// Starting position (accounting for scroll)
-	// This creates a smooth scrolling effect from right to left
-	startX := DISPLAY_WIDTH - (offset % (textWidth + DISPLAY_WIDTH))
-	
-	// Position text vertically centered in the display
-	// For a 32-pixel high display with 7-pixel font, center at row 12
-	centerY := (DISPLAY_HEIGHT - FONT_HEIGHT) / 2
-	
-	// Draw the text into the buffer
-	cursorX := startX
-	for _, char := range text {
-		fontData, exists := font5x7[char]
-		if !exists {
-			fontData = font5x7[' '] // Default to space for unknown characters
-		}
-		
-		// Skip if the character is completely off-screen to the left
-		if cursorX + FONT_WIDTH < 0 {
-			cursorX += FONT_WIDTH + CHAR_SPACING
+		// Skip if the entire character would be off-screen
+		if x + FONT_WIDTH < 0 {
+			x += FONT_WIDTH + CHAR_SPACING
 			continue
 		}
-		
-		// Skip if the character is completely off-screen to the right
-		if cursorX >= DISPLAY_WIDTH {
+		if x >= DISPLAY_WIDTH {
 			break
 		}
 		
-		// Draw the character
+		// Get the font data for this character
+		fontData, exists := comicFont[char]
+		if !exists {
+			// Use space for unknown characters
+			fontData = comicFont[' ']
+		}
+		
+		// Draw each column of the character
 		for col := 0; col < FONT_WIDTH; col++ {
-			x := cursorX + col
-			
 			// Skip if this column is off-screen
-			if x < 0 || x >= DISPLAY_WIDTH {
+			if x + col < 0 || x + col >= DISPLAY_WIDTH {
 				continue
-			}
-			
-			// Get the column data from the font
-			colData := byte(0)
-			if col < len(fontData) {
-				colData = fontData[col]
 			}
 			
 			// Draw each pixel in the column
 			for row := 0; row < FONT_HEIGHT; row++ {
-				// Check if this pixel is on in the font
-				isOn := (colData & (1 << row)) != 0
-				
-				if isOn {
-					// Calculate the actual Y position on the display
-					y := centerY + row
+				// Check if this pixel should be on
+				if row < len(fontData) && (fontData[row] & (0x80 >> col)) != 0 {
+					// Calculate the final position on the display
+					displayY := startY + row
+					displayX := x + col
 					
-					// Skip if off-screen vertically
-					if y < 0 || y >= DISPLAY_HEIGHT {
-						continue
-					}
-					
-					// Map the display coordinates to the appropriate framebuffer location
-					// For 32-high displays: Rows 0-15 map to upper half, 16-31 to lower half
-					if y < 16 {
-						// Upper half - use the R1G1B1 pins (first 3 bytes)
-						idx := x * 6
-						bufferData[y][idx+0] = color[0] // R1
-						bufferData[y][idx+1] = color[1] // G1
-						bufferData[y][idx+2] = color[2] // B1
-					} else {
-						// Lower half - use the R2G2B2 pins (last 3 bytes)
-						// Adjust the row to be 0-15 range for the buffer
-						idx := x * 6
-						bufferData[y-16][idx+3] = color[0] // R2
-						bufferData[y-16][idx+4] = color[1] // G2
-						bufferData[y-16][idx+5] = color[2] // B2
+					// Set pixel
+					if displayY >= 0 && displayY < DISPLAY_HEIGHT {
+						fb.SetPixel(displayX, displayY, color[0], color[1], color[2])
 					}
 				}
 			}
 		}
 		
-		// Move cursor to the next character position
-		cursorX += FONT_WIDTH + CHAR_SPACING
+		// Move to the next character position
+		x += FONT_WIDTH + CHAR_SPACING
+	}
+}
+
+// RenderFrame renders a full frame to the LED matrix
+func (c *HUB75Controller) RenderFrame(frameBuffer *FrameBuffer) error {
+	// On first call, log that we're starting to render
+	renderLock.Lock()
+	if isFirstRender {
+		log.Println("Starting to render frames to the matrix...")
+		isFirstRender = false
+	}
+	renderLock.Unlock()
+	
+	// Calculate the start time of this frame for consistent timing
+	frameStartTime := time.Now()
+	targetFrameTime := time.Second / time.Duration(REFRESH_RATE)
+	
+	// For each row in the 32-pixel high display
+	for y := 0; y < DISPLAY_HEIGHT; y++ {
+		// Calculate the row address (0-15) and whether this is a top/bottom row
+		rowAddress := y % 16
+		isBottomHalf := y >= 16
+		
+		// CRITICAL: Disable output while we set up this row - prevents flickering
+		if err := c.setPin(c.config.OEPin, 1); err != nil {
+			return err
+		}
+		
+		// Set row address pins (A-E) - fully complete this before moving on
+		if err := c.setPin(c.config.ABPin, (rowAddress >> 0) & 1); err != nil { return err }
+		if err := c.setPin(c.config.BCPin, (rowAddress >> 1) & 1); err != nil { return err }
+		if err := c.setPin(c.config.CCPin, (rowAddress >> 2) & 1); err != nil { return err }
+		if err := c.setPin(c.config.DPin, (rowAddress >> 3) & 1); err != nil { return err }
+		if err := c.setPin(c.config.EPin, 0); err != nil { return err }
+		
+		// Pre-clear all RGB pins before setting new values (helps reduce ghosting)
+		// Top half clear
+		if err := c.setPin(c.config.R1Pin, 0); err != nil { return err }
+		if err := c.setPin(c.config.G1Pin, 0); err != nil { return err }
+		if err := c.setPin(c.config.B1Pin, 0); err != nil { return err }
+		// Bottom half clear
+		if err := c.setPin(c.config.R2Pin, 0); err != nil { return err }
+		if err := c.setPin(c.config.G2Pin, 0); err != nil { return err }
+		if err := c.setPin(c.config.B2Pin, 0); err != nil { return err }
+		
+		// For each column
+		for x := 0; x < DISPLAY_WIDTH; x++ {
+			// Get pixel color with intensity correction to avoid flicker at low brightness
+			r1, g1, b1 := getAdjustedPixelColor(frameBuffer.Pixels[y][x])
+			
+			// Set RGB data pins for this pixel
+			if isBottomHalf {
+				// Bottom half pixels use R2/G2/B2 pins
+				if err := c.setPin(c.config.R2Pin, int(r1)); err != nil { return err }
+				if err := c.setPin(c.config.G2Pin, int(g1)); err != nil { return err }
+				if err := c.setPin(c.config.B2Pin, int(b1)); err != nil { return err }
+			} else {
+				// Top half pixels use R1/G1/B1 pins
+				if err := c.setPin(c.config.R1Pin, int(r1)); err != nil { return err }
+				if err := c.setPin(c.config.G1Pin, int(g1)); err != nil { return err }
+				if err := c.setPin(c.config.B1Pin, int(b1)); err != nil { return err }
+			}
+			
+			// Clock in this pixel's data - very fast clock for consistent timing
+			if err := c.setPin(c.config.CLKPin, 1); err != nil { return err }
+			if err := c.setPin(c.config.CLKPin, 0); err != nil { return err }
+		}
+		
+		// CRITICAL: Latch the data to the display drivers
+		if err := c.setPin(c.config.LAPin, 1); err != nil { return err }
+		if err := c.setPin(c.config.LAPin, 0); err != nil { return err }
+		
+		// CRITICAL: Enable output only after data is fully latched
+		if err := c.setPin(c.config.OEPin, 0); err != nil { return err }
+		
+		// Wait for scan rate (allows the row to display for the proper amount of time)
+		time.Sleep(time.Microsecond * SCAN_RATE)
 	}
 	
-	// Copy the buffer to the frame data
-	// Only copy once all drawing is complete to prevent flickering
-	for row := range bufferData {
-		copy(frameData[row], bufferData[row])
+	// If using fixed timing, ensure each frame takes exactly the same amount of time
+	if FIXED_TIME_PER_FRAME {
+		elapsed := time.Since(frameStartTime)
+		if elapsed < targetFrameTime {
+			time.Sleep(targetFrameTime - elapsed)
+		}
 	}
+	
+	return nil
+}
+
+// getAdjustedPixelColor adjusts color intensities to avoid flicker at low brightness
+func getAdjustedPixelColor(color [3]byte) (byte, byte, byte) {
+	// For each color component, ensure it has at least MIN_BRIGHTNESS if it's on at all
+	r, g, b := color[0], color[1], color[2]
+	
+	// Apply non-linear brightness correction to avoid flicker at low intensities
+	// Only apply to non-zero values to maintain true black
+	if r > 0 && r < byte(255*MIN_BRIGHTNESS) {
+		r = byte(255 * MIN_BRIGHTNESS)
+	}
+	if g > 0 && g < byte(255*MIN_BRIGHTNESS) {
+		g = byte(255 * MIN_BRIGHTNESS)
+	}
+	if b > 0 && b < byte(255*MIN_BRIGHTNESS) {
+		b = byte(255 * MIN_BRIGHTNESS)
+	}
+	
+	return r, g, b
 }
 
 func main() {
 	// Parse command line flags
 	textToScroll := flag.String("text", "HELLO WORLD", "Text to scroll across the display")
 	showText := flag.Bool("scroll", false, "Show scrolling text instead of test patterns")
+	slowScroll := flag.Bool("slow", false, "Scroll text at a slower speed")
+	testMode := flag.Bool("test", false, "Run a simple test pattern only")
+	limitRefresh := flag.Int("limit-refresh", 0, "Limit refresh rate to Hz. 0=no limit")
 	flag.Parse()
 
 	log.Printf("Starting HUB75 display test with scrolling text: %s", *textToScroll)
+	log.Printf("Display configuration: %dx%d pixels", DISPLAY_WIDTH, DISPLAY_HEIGHT)
 
-	// Create HUB75 configuration for Adafruit RGB Matrix Bonnet pinout
+	// Create HUB75 configuration with Raspberry Pi 5 pins (GPIO base 0)
+	// These are the GPIO pin numbers, not the physical pins
 	cfg := HUB75Config{
-		R1Pin: 5,  // Red data for upper half
-		G1Pin: 13, // Green data for upper half
-		B1Pin: 6,  // Blue data for upper half
-		R2Pin: 12, // Red data for lower half
-		G2Pin: 16, // Green data for lower half
-		B2Pin: 23, // Blue data for lower half
-		CLKPin: 17, // Clock signal
-		OEPin: 4,   // Output enable
-		LAPin: 21,  // Latch signal
-		ABPin: 22,  // Address bit A
-		BCPin: 26,  // Address bit B
-		CCPin: 27,  // Address bit C
-		DPin: 20,   // Address bit D
-		EPin: 24,   // Address bit E (for 64-pixel high displays)
+		R1Pin: 5 + 512,   // Red data for upper half
+		G1Pin: 13 + 512,  // Green data for upper half
+		B1Pin: 6 + 512,   // Blue data for upper half
+		R2Pin: 12 + 512,  // Red data for lower half
+		G2Pin: 16 + 512,  // Green data for lower half
+		B2Pin: 23 + 512,  // Blue data for lower half
+		CLKPin: 17 + 512, // Clock signal
+		OEPin: 4 + 512,   // Output enable
+		LAPin: 21 + 512,  // Latch signal
+		ABPin: 22 + 512,  // Address bit A
+		BCPin: 26 + 512,  // Address bit B
+		CCPin: 27 + 512,  // Address bit C
+		DPin:  20 + 512,  // Address bit D
+		EPin:  24 + 512,  // Address bit E
 	}
+	
+	log.Printf("GPIO Pin Configuration:")
+	log.Printf("R1: %d, G1: %d, B1: %d", cfg.R1Pin-512, cfg.G1Pin-512, cfg.B1Pin-512)
+	log.Printf("R2: %d, G2: %d, B2: %d", cfg.R2Pin-512, cfg.G2Pin-512, cfg.B2Pin-512)
+	log.Printf("CLK: %d, OE: %d, LA: %d", cfg.CLKPin-512, cfg.OEPin-512, cfg.LAPin-512)
+	log.Printf("ROW A: %d, B: %d, C: %d, D: %d, E: %d", 
+		cfg.ABPin-512, cfg.BCPin-512, cfg.CCPin-512, cfg.DPin-512, cfg.EPin-512)
 
 	// Initialize HUB75 controller
 	hub75, err := NewHUB75Controller(cfg)
@@ -388,151 +963,151 @@ func main() {
 		log.Fatalf("Failed to initialize HUB75 controller: %v", err)
 	}
 	defer hub75.Close()
+	
+	if *testMode {
+		// Simple static test pattern
+		frameBuffer := NewFrameBuffer()
+		
+		// Draw test pattern with gradient bars to better detect flickering
+		log.Println("Creating gradient test pattern to check for flickering...")
+		
+		// 1. Clear to black
+		for y := 0; y < DISPLAY_HEIGHT; y++ {
+			for x := 0; x < DISPLAY_WIDTH; x++ {
+				frameBuffer.SetPixel(x, y, 0, 0, 0)
+			}
+		}
+		
+		// 2. Draw horizontal gradient bars - red, green, blue
+		barHeight := DISPLAY_HEIGHT / 3
+		
+		// Red gradient (top)
+		for y := 0; y < barHeight; y++ {
+			for x := 0; x < DISPLAY_WIDTH; x++ {
+				intensity := byte((x * 255) / DISPLAY_WIDTH)
+				frameBuffer.SetPixel(x, y, intensity, 0, 0)
+			}
+		}
+		
+		// Green gradient (middle)
+		for y := barHeight; y < barHeight*2; y++ {
+			for x := 0; x < DISPLAY_WIDTH; x++ {
+				intensity := byte((x * 255) / DISPLAY_WIDTH)
+				frameBuffer.SetPixel(x, y, 0, intensity, 0)
+			}
+		}
+		
+		// Blue gradient (bottom)
+		for y := barHeight*2; y < DISPLAY_HEIGHT; y++ {
+			for x := 0; x < DISPLAY_WIDTH; x++ {
+				intensity := byte((x * 255) / DISPLAY_WIDTH)
+				frameBuffer.SetPixel(x, y, 0, 0, intensity)
+			}
+		}
+		
+		// Render test pattern for 10 seconds
+		log.Println("Rendering test pattern for 10 seconds...")
+		startTime := time.Now()
+		for time.Since(startTime) < 10*time.Second {
+			if err := hub75.RenderFrame(frameBuffer); err != nil {
+				log.Printf("Error rendering test frame: %v", err)
+				break
+			}
+		}
+		
+		log.Println("Test pattern complete.")
+		return
+	}
 
 	// Set up signal handler for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Prepare frame data
-	frameData := make([][]byte, ROWS)
-	for i := range frameData {
-		// Each row needs RGB data for each pixel
-		// For a 64-pixel wide display with two RGB values per pixel (upper/lower):
-		// 64 pixels * 3 colors (RGB) * 2 (upper/lower) = 384 bytes per row
-		frameData[i] = make([]byte, DISPLAY_WIDTH*3*2)
-	}
+	stop := make(chan struct{})
 
 	// Main display loop
-	stop := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(time.Millisecond * 50) // 20 FPS for smoother animation
-		patternCounter := 0
-		scrollOffset := 0
+		// Double buffering
+		frameBuffer1 := NewFrameBuffer()
+		frameBuffer2 := NewFrameBuffer()
 		
+		// Current display buffer and next buffer
+		displayBuffer := frameBuffer1
+		nextBuffer := frameBuffer2
+		
+		// For smooth scrolling
+		scrollOffset := 0
+		frameCounter := 0  // For tracking animation frames
+		
+		// Fixed frame rate ticker with limiter if specified
+		frameRate := REFRESH_RATE
+		if *limitRefresh > 0 && *limitRefresh < REFRESH_RATE {
+			frameRate = *limitRefresh
+		}
+		frameTicker := time.NewTicker(time.Second / time.Duration(frameRate))
+		
+		// Initialize both buffers with the same content
+		color := [3]byte{1, 0, 0} // Red text
+		displayBuffer.RenderText(*textToScroll, scrollOffset, color)
+		nextBuffer.RenderText(*textToScroll, scrollOffset, color)
+		
+		// Render loop
 		for {
 			select {
 			case <-sigChan:
 				log.Println("Received shutdown signal")
 				stop <- struct{}{}
 				return
-			case <-ticker.C:
-				if *showText {
-					// Show scrolling text - use red instead of yellow for less brightness
-					color := [3]byte{1, 0, 0} // Red text (R only)
-					renderScroll(frameData, *textToScroll, scrollOffset, color)
-					// Scroll slower for better readability (increment by 1 every frame)
-					scrollOffset++
-				} else {
-					// Show test patterns
-					updateFrameData(frameData, patternCounter)
-				}
-				
-				patternCounter++
-				
-				// Render the frame to the display
-				if err := hub75.RenderFrame(frameData); err != nil {
+			case <-frameTicker.C:
+				// Render current frame
+				if err := hub75.RenderFrame(displayBuffer); err != nil {
 					log.Printf("Error rendering frame: %v", err)
 				}
+				
+				// Update scroll offset for next frame
+				if *showText {
+					// Update scrolling speed based on slow flag
+					speed := SCROLL_SPEED
+					if *slowScroll {
+						// Still move but at reduced speed
+						if frameCounter % 5 == 0 {
+							scrollOffset += 1
+						}
+					} else {
+						scrollOffset += speed
+					}
+					
+					// Prepare next buffer
+					nextBuffer.RenderText(*textToScroll, scrollOffset, color)
+				} else {
+					// For non-scrolling modes, update color pattern
+					pattern := frameCounter % 3
+					var r, g, b byte
+					switch pattern {
+					case 0:
+						r, g, b = 1, 0, 0 // Red
+					case 1:
+						r, g, b = 0, 1, 0 // Green
+					case 2:
+						r, g, b = 0, 0, 1 // Blue
+					}
+					
+					// Fill display with solid color
+					for y := 0; y < DISPLAY_HEIGHT; y++ {
+						for x := 0; x < DISPLAY_WIDTH; x++ {
+							nextBuffer.SetPixel(x, y, r, g, b)
+						}
+					}
+				}
+				
+				// Swap buffers for next frame
+				displayBuffer, nextBuffer = nextBuffer, displayBuffer
+				
+				// Track frames for animation timing
+				frameCounter++
 			}
 		}
 	}()
 
 	<-stop
 	log.Println("HUB75 program stopped")
-}
-
-// updateFrameData updates the frame data with a test pattern
-// patternCounter is used to create animated patterns
-func updateFrameData(frameData [][]byte, patternCounter int) {
-	switch patternCounter % 4 {
-	case 0:
-		// All red
-		fillColor(frameData, 1, 0, 0)
-	case 1:
-		// All green
-		fillColor(frameData, 0, 1, 0)
-	case 2:
-		// All blue
-		fillColor(frameData, 0, 0, 1)
-	case 3:
-		// Checkerboard pattern
-		fillCheckerboard(frameData, patternCounter)
-	}
-}
-
-// fillColor fills the entire frame with a solid color
-func fillColor(frameData [][]byte, r, g, b byte) {
-	// First clear the entire frame
-	for row := range frameData {
-		for col := 0; col < DISPLAY_WIDTH; col++ {
-			idx := col * 6
-			for i := 0; i < 6; i++ {
-				frameData[row][idx+i] = 0
-			}
-		}
-	}
-
-	// Then set all pixels to the desired color
-	for row := range frameData {
-		for col := 0; col < DISPLAY_WIDTH; col++ {
-			// Set upper half pixel
-			upperIdx := col * 6
-			frameData[row][upperIdx+0] = r // R1
-			frameData[row][upperIdx+1] = g // G1
-			frameData[row][upperIdx+2] = b // B1
-			
-			// Set lower half pixel
-			frameData[row][upperIdx+3] = r // R2
-			frameData[row][upperIdx+4] = g // G2
-			frameData[row][upperIdx+5] = b // B2
-		}
-	}
-}
-
-// fillCheckerboard creates a checkerboard pattern
-func fillCheckerboard(frameData [][]byte, offset int) {
-	// First clear the entire frame
-	for row := range frameData {
-		for col := 0; col < DISPLAY_WIDTH; col++ {
-			idx := col * 6
-			for i := 0; i < 6; i++ {
-				frameData[row][idx+i] = 0
-			}
-		}
-	}
-
-	// Create animated checkerboard pattern using the offset for animation
-	// Larger cells make the pattern more visible (4x4 pixels per cell)
-	cellSize := 4
-	for row := range frameData {
-		for col := 0; col < DISPLAY_WIDTH; col++ {
-			// Determine if this should be an "on" cell in the checkerboard
-			// Using integer division to group pixels into cells
-			cellRow := row / cellSize
-			cellCol := col / cellSize
-			isOn := ((cellRow + cellCol + (offset / 8)) % 2) == 0
-			
-			// Calculate the index in the frame data
-			upperIdx := col * 6
-			
-			// Set both upper and lower half pixels to the same color for consistency
-			if isOn {
-				// Yellow for "on" cells
-				frameData[row][upperIdx+0] = 1 // R1
-				frameData[row][upperIdx+1] = 1 // G1
-				frameData[row][upperIdx+2] = 0 // B1
-				frameData[row][upperIdx+3] = 1 // R2
-				frameData[row][upperIdx+4] = 1 // G2
-				frameData[row][upperIdx+5] = 0 // B2
-			} else {
-				// Black for "off" cells
-				frameData[row][upperIdx+0] = 0 // R1
-				frameData[row][upperIdx+1] = 0 // G1
-				frameData[row][upperIdx+2] = 0 // B1
-				frameData[row][upperIdx+3] = 0 // R2
-				frameData[row][upperIdx+4] = 0 // G2
-				frameData[row][upperIdx+5] = 0 // B2
-			}
-		}
-	}
 } 

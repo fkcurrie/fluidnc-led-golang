@@ -1,0 +1,14 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+The objective of this project is to display information from a FluidNC controller on a 64x32 pixel LED screen attached to a Raspberry PI5 with an Adafruit RGB Matrix Bonnet attached.
+All code needs to be in GOLANG.
+The System is a Raspberry Pi 5 running on a 2.4GHz quad-core 64-bit Arm Cortex-A76 CPU
+The OS is Rasperian version 12 (ebian 12 Bookworm)
+The RPI has a Adafruit RGB Matrix Bonnet for Raspberry Pi installed - always refer to the documentation at https://learn.adafruit.com/adafruit-rgb-matrix-bonnet-for-raspberry-pi/
+To ensure the bonnet and the screen works on a RPI5 please ensure that the documentation at https://github.com/adafruit/Adafruit_Blinka_Raspberry_Pi5_Piomatter/
+The LED screen being used is a 64x32 RGB LED Matrix - 3mm pitch (https://www.adafruit.com/product/2279)
+There is no containers/docker involved in this project
+
